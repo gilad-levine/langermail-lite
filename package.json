@@ -1,0 +1,15 @@
+{
+  "name": "langermail-lite",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Superlightweight transactional email sender driven from HubSpot, sending via AWS SES.",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test",
+    "send-test": "node scripts/send-test.js"
+  },
+  "license": "UNLICENSED"
+}
