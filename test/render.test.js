@@ -10,6 +10,7 @@ const {
   buildEmailPayload,
   looksEscaped,
   decodeHtmlEntities,
+  unwrapViewSource,
 } = require('../hubspot/custom-code-action.js');
 
 test('mergeTags substitutes known tokens', () => {
@@ -110,6 +111,30 @@ test('decodeHtmlEntities un-escapes markup, &amp; last', () => {
     decodeHtmlEntities('&lt;a href=&quot;?x=1&amp;y=2&quot;&gt;A&#39;s&lt;/a&gt;'),
     '<a href="?x=1&y=2">A\'s</a>',
   );
+});
+
+test('unwrapViewSource leaves normal HTML untouched', () => {
+  const html = '<div>hello</div>';
+  assert.equal(unwrapViewSource(html), html);
+});
+
+test('unwrapViewSource reconstructs source from a saved view-source page', () => {
+  const page =
+    '<div class="line-gutter-backdrop"></div>' +
+    '<form><label class="line-wrap-control">Line wrap<input type="checkbox"></label></form>' +
+    '<table><tbody>' +
+    '<tr><td class="line-number" value="1"></td><td class="line-content">' +
+    '<span class="html-tag">&lt;div&gt;</span>Hi <a href="https://x/?a=1&amp;b=2">' +
+    'https://x/?a=1&amp;amp;b=2</a><span class="html-tag">&lt;/div&gt;</span></td></tr>' +
+    '<tr><td class="line-number" value="2"></td><td class="line-content">' +
+    '<span class="html-comment">&lt;!--FOOTER_START--&gt;</span>x' +
+    '<span class="html-comment">&lt;!--FOOTER_END--&gt;</span></td></tr>' +
+    '</tbody></table>';
+  const recovered = unwrapViewSource(page);
+  assert.match(recovered, /<div>Hi https:\/\/x\/\?a=1&amp;b=2<\/div>/);
+  assert.match(recovered, /<!--FOOTER_START-->x<!--FOOTER_END-->/);
+  // and the recovered source is now processable end to end
+  assert.equal(stripFooter(recovered).includes('FOOTER'), false);
 });
 
 test('tokensFromInputs drops reserved control fields', () => {

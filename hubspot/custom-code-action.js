@@ -95,6 +95,25 @@ function decodeHtmlEntities(s) {
 }
 
 /**
+ * Reconstruct the original HTML from a browser `view-source:` page saved as a
+ * file — a very common way to accidentally capture the wrong thing. Such a page
+ * wraps each source line in a `<td class="line-content">` cell with the real
+ * markup entity-escaped inside `<span>`/`<a>` tags. We take each cell's text,
+ * strip the wrapper tags, and decode once to recover the source (with its
+ * absolute image URLs intact). Non-view-source HTML is returned unchanged.
+ */
+function unwrapViewSource(html) {
+  if (!/class="line-content"/.test(html)) return html;
+  const cells = html.match(/<td class="line-content"[^>]*>[\s\S]*?<\/td>/g);
+  if (!cells) return html;
+  const source = cells
+    .map((cell) => cell.replace(/^<td class="line-content"[^>]*>/, '').replace(/<\/td>$/, ''))
+    .map((inner) => inner.replace(/<[^>]+>/g, '')) // drop wrapper span/a tags, keep text
+    .join('\n');
+  return decodeHtmlEntities(source);
+}
+
+/**
  * Remove the whole HTML element that starts at the first match of `openTagRe`,
  * balancing nested `<tag>`/`</tag>` pairs so nested divs/tables don't trip it
  * up. Returns the input unchanged if there's no match or the tags don't balance.
@@ -251,6 +270,13 @@ async function resolveHtml(props, token) {
     throw new Error(`No HTML: "${PROPS.htmlFile}" and "${PROPS.html}" are both empty`);
   }
 
+  // Recover the real HTML if a browser `view-source:` page was uploaded.
+  const unwrapped = unwrapViewSource(html);
+  if (unwrapped !== html) {
+    console.log('Detected a saved view-source page; reconstructed the real HTML');
+    html = unwrapped;
+  }
+
   // Un-escape markup that was stored entity-escaped, else it emails as text.
   if (looksEscaped(html)) {
     console.log('Detected entity-escaped HTML; decoding before send');
@@ -379,6 +405,7 @@ module.exports.mergeTags = mergeTags;
 module.exports.stripFooter = stripFooter;
 module.exports.looksEscaped = looksEscaped;
 module.exports.decodeHtmlEntities = decodeHtmlEntities;
+module.exports.unwrapViewSource = unwrapViewSource;
 module.exports.tokensFromInputs = tokensFromInputs;
 module.exports.buildEmailPayload = buildEmailPayload;
 module.exports.sesSendEmail = sesSendEmail;
