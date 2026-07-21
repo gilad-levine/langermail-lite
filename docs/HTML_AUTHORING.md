@@ -13,14 +13,32 @@ Use double-brace tokens anywhere in the **subject** or the **HTML body**:
 
 - A token is replaced with the value of the matching **workflow input field**
   (which you map to a contact property — see the main README).
+- **Input-field names can't contain dots**, so a dotted token matches the
+  underscore form: `{{custom.variable}}` → input `custom_variable`,
+  `{{firstname}}` → input `firstname`. Matching is case-insensitive.
 - Whitespace inside the braces is fine: `{{ firstname }}` == `{{firstname}}`.
 - **Unknown tokens render as an empty string** — they never leak `{{...}}` into
-  the sent email. So a missing `firstname` just yields `Hi , thanks...`; guard
-  against that with wording like `Hi {{firstname}}` → prefer `Hello there`
-  fallbacks in copy, or always map the field.
+  the sent email. So a missing `firstname` just yields `Hi , thanks...`; always
+  map the field, or word copy to tolerate a blank.
 - `{{email}}` is always available (the recipient address).
-- Use **literal** `{{...}}` tags — **not** HubSpot personalization tokens. This
-  sender does its own substitution.
+- The run log prints `Tokens in template: …` and `Unmatched tokens (sent
+  empty): …` so you can see exactly which input fields an email needs.
+
+### ⚠️ Do NOT use HubSpot's built-in personalization tokens
+
+Use **literal, custom** `{{...}}` tokens typed as plain text — **not** HubSpot's
+personalization widget (the "First name" / contact-property dropdown).
+
+**Why:** HubSpot *resolves its own recognized tokens when it renders/exports the
+email*. A built-in `{{ contact.firstname }}` gets baked to a static value at
+export time — e.g. the default **"there"** — so it never reaches this sender as
+a token and can't be personalized per recipient. Tokens HubSpot doesn't
+recognize (like `{{custom.variable}}`) pass through untouched.
+
+So for **every** value you want personalized — including first name — insert a
+custom token like `{{firstname}}` as literal text (the same way a custom token
+such as `{{custom.variable}}` is added), then map an input field to the contact
+property. That way the value is filled at send time, per recipient.
 
 ## Footer removal — automatic for HubSpot emails
 
