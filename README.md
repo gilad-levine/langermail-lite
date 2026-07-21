@@ -129,10 +129,12 @@ See [`docs/HTML_AUTHORING.md`](docs/HTML_AUTHORING.md). Two gotchas we hit:
   has **relative** image paths (`./x_files/img.png`) that don't load in email,
   plus browser-extension junk. Use HubSpot's **Export/Copy HTML** (absolute
   `https://` CDN image URLs).
-- **Footer stripping is opt-in.** `stripFooter` only removes content wrapped in
-  `<!--FOOTER_START-->…<!--FOOTER_END-->` markers. Without markers the footer
-  (incl. the CAN-SPAM unsubscribe + address) sends as-is — which is usually what
-  you want.
+- **Footer stripping is automatic for HubSpot emails.** The sender detects
+  HubSpot's own footer markup (`hse-footer` / `hse-section-last`) and removes
+  that whole block — no per-email markers. This drops the unsubscribe + physical
+  address; keep them if you need CAN-SPAM compliance for marketing (transactional
+  mail is generally exempt). `<!--FOOTER_START-->…<!--FOOTER_END-->` markers are
+  an optional override for non-HubSpot HTML.
 
 ## AWS / SES
 

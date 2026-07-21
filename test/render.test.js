@@ -58,6 +58,39 @@ test('stripFooter leaves HTML without a footer marker untouched', () => {
   assert.equal(stripFooter(html), html);
 });
 
+test('stripFooter auto-removes HubSpot last section (nested divs) with no markers', () => {
+  const html =
+    '<div class="hse-section"><div>Body content</div></div>' +
+    '<div id="section-3" class="hse-section hse-section-last">' +
+    '<div class="hse-column-container"><div class="hse-column">' +
+    '<table class="hse-footer hse-secondary"><tbody><tr><td>' +
+    '<p>123 Anywhere St</p><p><a data-unsubscribe="true">Unsubscribe</a></p>' +
+    '</td></tr></tbody></table></div></div></div>';
+  const out = stripFooter(html);
+  assert.equal(out, '<div class="hse-section"><div>Body content</div></div>');
+  assert.ok(!/Unsubscribe/.test(out));
+  assert.ok(!/hse-footer/.test(out));
+});
+
+test('stripFooter falls back to the hse-footer table when no section wrapper', () => {
+  const html =
+    '<div>Keep me</div>' +
+    '<table class="hse-footer"><tbody><tr><td>footer bits</td></tr></tbody></table>' +
+    '<div>Keep me too</div>';
+  assert.equal(stripFooter(html), '<div>Keep me</div><div>Keep me too</div>');
+});
+
+test('stripFooter does not touch content when no hse-footer / marker present', () => {
+  const html =
+    '<div class="hse-section hse-section-last"><p>Real last-section content, not a footer</p></div>';
+  assert.equal(stripFooter(html), html);
+});
+
+test('stripFooter still honors manual FOOTER markers alongside HubSpot detection', () => {
+  const html = '<p>Body</p><!--FOOTER_START--><p>manual footer</p><!--FOOTER_END-->';
+  assert.equal(stripFooter(html), '<p>Body</p>');
+});
+
 test('tokensFromInputs drops reserved control fields', () => {
   const tokens = tokensFromInputs({
     transactional_email_id: '123',

@@ -73,17 +73,51 @@ function mergeTags(input, tokens) {
 }
 
 /**
- * Deterministically remove the footer. The HTML author wraps the footer in a
- * marker the code strips wholesale:
- *   <!--FOOTER_START--> … <!--FOOTER_END-->   (recommended — survives nesting)
- * A single, non-nested <div data-footer>…</div> is also removed as a fallback.
- * HTML without either marker is returned unchanged.
+ * Remove the whole HTML element that starts at the first match of `openTagRe`,
+ * balancing nested `<tag>`/`</tag>` pairs so nested divs/tables don't trip it
+ * up. Returns the input unchanged if there's no match or the tags don't balance.
+ */
+function removeElement(html, openTagRe, tagName) {
+  const open = openTagRe.exec(html);
+  if (!open) return html;
+  const startIdx = open.index;
+  const tokenRe = new RegExp(`<${tagName}\\b|</${tagName}>`, 'gi');
+  tokenRe.lastIndex = startIdx;
+  let depth = 0;
+  let m;
+  while ((m = tokenRe.exec(html))) {
+    if (m[0][1] === '/') {
+      depth -= 1;
+      if (depth === 0) return html.slice(0, startIdx) + html.slice(m.index + m[0].length);
+    } else {
+      depth += 1;
+    }
+  }
+  return html; // unbalanced — leave untouched
+}
+
+/**
+ * Remove the footer, deterministically, with no per-email markup required:
+ *   1. Manual override — anything between <!--FOOTER_START--> and
+ *      <!--FOOTER_END--> (for non-HubSpot HTML, or to force a specific block).
+ *   2. HubSpot-authored emails — the footer carries HubSpot's own stable class
+ *      `hse-footer`. When present, drop the whole last section
+ *      (`hse-section-last`, which is the footer block) for a clean removal, or
+ *      the `hse-footer` table itself if the section wrapper isn't found.
+ *   3. Legacy — a single, non-nested <div data-footer>…</div>.
+ * HTML with no recognizable footer is returned unchanged.
  */
 function stripFooter(html) {
   if (html == null) return '';
-  return String(html)
-    .replace(/<!--\s*FOOTER_START\s*-->[\s\S]*?<!--\s*FOOTER_END\s*-->/gi, '')
-    .replace(/<div[^>]*\bdata-footer\b[^>]*>[\s\S]*?<\/div>/gi, '');
+  let out = String(html).replace(/<!--\s*FOOTER_START\s*-->[\s\S]*?<!--\s*FOOTER_END\s*-->/gi, '');
+
+  if (/\bhse-footer\b/i.test(out)) {
+    const before = out;
+    out = removeElement(out, /<div\b[^>]*\bhse-section-last\b[^>]*>/i, 'div');
+    if (out === before) out = removeElement(out, /<table\b[^>]*\bhse-footer\b[^>]*>/i, 'table');
+  }
+
+  return out.replace(/<div[^>]*\bdata-footer\b[^>]*>[\s\S]*?<\/div>/gi, '');
 }
 
 /** Build the contact merge-token map from the workflow input fields. */

@@ -22,26 +22,31 @@ Use double-brace tokens anywhere in the **subject** or the **HTML body**:
 - Use **literal** `{{...}}` tags — **not** HubSpot personalization tokens. This
   sender does its own substitution.
 
-## Footer removal — deterministic markers
+## Footer removal — automatic for HubSpot emails
 
-Wrap the footer in a comment marker. Everything between the markers (inclusive)
-is removed before sending:
+**If you author in HubSpot, you don't need to do anything.** HubSpot tags its
+footer with stable classes (`hse-footer`, and the enclosing
+`hse-section-last`), and the sender detects and removes that block
+automatically — including all its nested tables/divs. No per-email markup.
+
+This removes the last-section footer (unsubscribe + physical address). If you
+*want* to keep a footer, either don't let HubSpot generate one, or move the
+content out of the last section.
+
+### Manual override (non-HubSpot HTML)
+
+If your HTML isn't HubSpot-authored, wrap the footer in comment markers and
+everything between them (inclusive) is removed:
 
 ```html
 <!--FOOTER_START-->
-<table> ... unsubscribe, address, legal ... </table>
+  ... unsubscribe, address, legal ...
 <!--FOOTER_END-->
 ```
 
-- Markers are **case-insensitive** and tolerate surrounding whitespace.
-- The comment-marker form is the **recommended** one: it survives arbitrarily
-  nested tables/divs inside the footer.
-- A single, **non-nested** `<div data-footer>...</div>` is also stripped as a
-  convenience, but do **not** use it if the footer contains nested `<div>`s —
-  the marker form is safer. When in doubt, use `<!--FOOTER_START-->`.
-
-If there is no footer to remove, simply omit the markers — HTML without them is
-sent unchanged.
+Markers are case-insensitive and whitespace-tolerant. A single, **non-nested**
+`<div data-footer>...</div>` is also stripped as a convenience. HTML with no
+recognizable footer is sent unchanged.
 
 ## Images must use absolute URLs
 
