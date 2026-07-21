@@ -73,6 +73,28 @@ function mergeTags(input, tokens) {
 }
 
 /**
+ * True when the string is HTML whose markup has been entity-escaped
+ * (`&lt;div&gt;` instead of `<div>`) — i.e. it has `&lt;`/`&gt;` but no real
+ * tags. Happens when raw HTML is pasted into a rich-text field or a file is
+ * saved from a browser `view-source:` page. Such content, sent as an HTML
+ * email, renders as literal source text.
+ */
+function looksEscaped(s) {
+  return /&lt;|&gt;/.test(s) && !/<(!doctype|html|body|head|table|div|p|a|img|span|td|tr)\b/i.test(s);
+}
+
+/** Decode the handful of HTML entities that matter for un-escaping markup. */
+function decodeHtmlEntities(s) {
+  return String(s)
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#0*39;|&apos;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&'); // must be last
+}
+
+/**
  * Remove the whole HTML element that starts at the first match of `openTagRe`,
  * balancing nested `<tag>`/`</tag>` pairs so nested divs/tables don't trip it
  * up. Returns the input unchanged if there's no match or the tags don't balance.
@@ -210,6 +232,7 @@ async function fetchTransactionalEmail(objectType, id, token) {
  * authenticated HubSpot page (a JS shell), not the file bytes.
  */
 async function resolveHtml(props, token) {
+  let html;
   const ref = props[PROPS.htmlFile];
   if (ref && String(ref).trim()) {
     const url = /^https?:\/\//i.test(ref)
@@ -219,13 +242,21 @@ async function resolveHtml(props, token) {
     if (res.status < 200 || res.status >= 300) {
       throw new Error(`Fetch HTML file ${ref} -> ${res.status} ${res.body.slice(0, 200)}`);
     }
-    return res.body;
+    console.log(`HTML source: file "${PROPS.htmlFile}" (${ref})`);
+    html = res.body;
+  } else if (props[PROPS.html] && props[PROPS.html].trim()) {
+    console.log(`HTML source: "${PROPS.html}" property`);
+    html = props[PROPS.html];
+  } else {
+    throw new Error(`No HTML: "${PROPS.htmlFile}" and "${PROPS.html}" are both empty`);
   }
 
-  const inline = props[PROPS.html];
-  if (inline && inline.trim()) return inline;
-
-  throw new Error(`No HTML: "${PROPS.htmlFile}" and "${PROPS.html}" are both empty`);
+  // Un-escape markup that was stored entity-escaped, else it emails as text.
+  if (looksEscaped(html)) {
+    console.log('Detected entity-escaped HTML; decoding before send');
+    html = decodeHtmlEntities(html);
+  }
+  return html;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -346,6 +377,8 @@ exports.main = async (event, callback) => {
 // runtime (only `main` is ever called there).
 module.exports.mergeTags = mergeTags;
 module.exports.stripFooter = stripFooter;
+module.exports.looksEscaped = looksEscaped;
+module.exports.decodeHtmlEntities = decodeHtmlEntities;
 module.exports.tokensFromInputs = tokensFromInputs;
 module.exports.buildEmailPayload = buildEmailPayload;
 module.exports.sesSendEmail = sesSendEmail;

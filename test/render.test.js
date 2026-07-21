@@ -8,6 +8,8 @@ const {
   stripFooter,
   tokensFromInputs,
   buildEmailPayload,
+  looksEscaped,
+  decodeHtmlEntities,
 } = require('../hubspot/custom-code-action.js');
 
 test('mergeTags substitutes known tokens', () => {
@@ -89,6 +91,25 @@ test('stripFooter does not touch content when no hse-footer / marker present', (
 test('stripFooter still honors manual FOOTER markers alongside HubSpot detection', () => {
   const html = '<p>Body</p><!--FOOTER_START--><p>manual footer</p><!--FOOTER_END-->';
   assert.equal(stripFooter(html), '<p>Body</p>');
+});
+
+test('looksEscaped detects entity-escaped markup', () => {
+  assert.equal(looksEscaped('&lt;!DOCTYPE html&gt;&lt;div&gt;hi&lt;/div&gt;'), true);
+});
+
+test('looksEscaped is false for real HTML', () => {
+  assert.equal(looksEscaped('<!DOCTYPE html><div>hi &amp; bye</div>'), false);
+});
+
+test('looksEscaped is false for plain text without entities', () => {
+  assert.equal(looksEscaped('just some words'), false);
+});
+
+test('decodeHtmlEntities un-escapes markup, &amp; last', () => {
+  assert.equal(
+    decodeHtmlEntities('&lt;a href=&quot;?x=1&amp;y=2&quot;&gt;A&#39;s&lt;/a&gt;'),
+    '<a href="?x=1&y=2">A\'s</a>',
+  );
 });
 
 test('tokensFromInputs drops reserved control fields', () => {
