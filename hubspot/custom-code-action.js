@@ -59,15 +59,47 @@ const RESERVED_INPUTS = new Set(['transactional_email_id', 'email', 'hs_object_i
 // Pure helpers (unit-tested — see test/render.test.js)
 // ─────────────────────────────────────────────────────────────────────────────
 
+const TOKEN_RE = /\{\{\s*([\w.\- ]+?)\s*\}\}/g;
+
+/** Normalize a token/input name for tolerant matching: lowercased, non-alnum → _. */
+function normalizeKey(s) {
+  return String(s).trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+
 /**
- * Replace {{ token }} occurrences with values from `tokens`.
- * Unknown tokens render as an empty string. Whitespace inside the braces is
- * tolerated: {{firstname}} and {{ firstname }} are equivalent.
+ * Look up a token value from the input map, tolerantly. Tries the exact name,
+ * then a normalized match — so `{{custom.variable}}` in the HTML resolves to a
+ * workflow input named `custom_variable` (HubSpot input names can't contain
+ * dots), and casing/spacing differences don't matter. Unknown → undefined.
+ */
+function lookupToken(tokens, key) {
+  if (Object.prototype.hasOwnProperty.call(tokens, key)) return tokens[key];
+  const nk = normalizeKey(key);
+  if (Object.prototype.hasOwnProperty.call(tokens, nk)) return tokens[nk];
+  for (const k of Object.keys(tokens)) {
+    if (normalizeKey(k) === nk) return tokens[k];
+  }
+  return undefined;
+}
+
+/** Unique token names ({{...}}) found in a string, in order of first appearance. */
+function findTokens(text) {
+  const seen = new Set();
+  const re = new RegExp(TOKEN_RE.source, 'g');
+  let m;
+  while ((m = re.exec(String(text)))) seen.add(m[1].trim());
+  return [...seen];
+}
+
+/**
+ * Replace {{ token }} occurrences with values from `tokens` (tolerant lookup —
+ * see lookupToken). Unknown tokens render as an empty string. Whitespace inside
+ * the braces is tolerated: {{firstname}} and {{ firstname }} are equivalent.
  */
 function mergeTags(input, tokens) {
   if (input == null) return '';
-  return String(input).replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, key) => {
-    const value = tokens[key];
+  return String(input).replace(new RegExp(TOKEN_RE.source, 'g'), (_, key) => {
+    const value = lookupToken(tokens, key.trim());
     return value === undefined || value === null ? '' : String(value);
   });
 }
@@ -368,6 +400,15 @@ exports.main = async (event, callback) => {
     const props = await fetchTransactionalEmail(objectType, emailId, token);
     const html = await resolveHtml(props, token);
 
+    // Surface which tokens the template uses and which have no matching input.
+    const tokens = tokensFromInputs(inputs);
+    const detected = findTokens(`${props[PROPS.subject] || ''} ${html}`);
+    if (detected.length) {
+      const unmatched = detected.filter((t) => lookupToken(tokens, t) === undefined);
+      console.log(`Tokens in template: ${detected.join(', ')}`);
+      if (unmatched.length) console.log(`Unmatched tokens (sent empty): ${unmatched.join(', ')}`);
+    }
+
     const payload = buildEmailPayload({
       subject: props[PROPS.subject] || '(no subject)',
       html,
@@ -375,7 +416,7 @@ exports.main = async (event, callback) => {
       fromEmail: props[PROPS.fromEmail],
       replyTo: props[PROPS.replyTo],
       toEmail,
-      tokens: tokensFromInputs(inputs),
+      tokens,
       configurationSet: env.SES_CONFIGURATION_SET,
     });
 
@@ -402,6 +443,9 @@ exports.main = async (event, callback) => {
 // Exported for unit tests + the local smoke test; harmless in the HubSpot
 // runtime (only `main` is ever called there).
 module.exports.mergeTags = mergeTags;
+module.exports.findTokens = findTokens;
+module.exports.normalizeKey = normalizeKey;
+module.exports.lookupToken = lookupToken;
 module.exports.stripFooter = stripFooter;
 module.exports.looksEscaped = looksEscaped;
 module.exports.decodeHtmlEntities = decodeHtmlEntities;

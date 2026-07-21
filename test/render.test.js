@@ -11,6 +11,9 @@ const {
   looksEscaped,
   decodeHtmlEntities,
   unwrapViewSource,
+  findTokens,
+  normalizeKey,
+  lookupToken,
 } = require('../hubspot/custom-code-action.js');
 
 test('mergeTags substitutes known tokens', () => {
@@ -39,6 +42,35 @@ test('mergeTags supports dotted token names', () => {
 
 test('mergeTags handles null input', () => {
   assert.equal(mergeTags(null, {}), '');
+});
+
+test('mergeTags resolves a dotted custom token from an underscore input', () => {
+  // {{custom.variable}} in HTML → workflow input named custom_variable
+  assert.equal(mergeTags('<p>{{custom.variable}}</p>', { custom_variable: 'Hello' }), '<p>Hello</p>');
+});
+
+test('mergeTags normalized matching is case-insensitive', () => {
+  assert.equal(mergeTags('{{ Custom.Variable }}', { custom_variable: 'X' }), 'X');
+});
+
+test('mergeTags prefers an exact key over a normalized one', () => {
+  assert.equal(mergeTags('{{firstname}}', { firstname: 'exact', Firstname: 'norm' }), 'exact');
+});
+
+test('normalizeKey lowercases and collapses non-alphanumerics to underscore', () => {
+  assert.equal(normalizeKey('  Custom.Variable '), 'custom_variable');
+  assert.equal(normalizeKey('contact.first-name'), 'contact_first_name');
+});
+
+test('lookupToken returns undefined for a genuinely missing token', () => {
+  assert.equal(lookupToken({ firstname: 'A' }, 'company'), undefined);
+});
+
+test('findTokens returns unique token names in first-seen order', () => {
+  assert.deepEqual(
+    findTokens('Hi {{firstname}}, your code {{custom.variable}} and {{firstname}} again'),
+    ['firstname', 'custom.variable'],
+  );
 });
 
 test('stripFooter removes the comment-marked footer inclusively', () => {
