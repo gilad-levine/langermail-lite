@@ -43,14 +43,27 @@ is removed before sending:
 If there is no footer to remove, simply omit the markers — HTML without them is
 sent unchanged.
 
+## Images must use absolute URLs
+
+Email clients can't resolve relative paths. Every `<img src>` (and any CSS
+`url(...)`) must be an absolute `https://…` link.
+
+> **Do not upload a browser "Save page as" export.** It rewrites assets to
+> relative paths like `./email_files/logo.png` (broken in email) and injects
+> browser-extension markup. Instead use HubSpot's **Export / Copy HTML** from
+> the email editor, which keeps absolute CDN image URLs.
+
 ## Storing the HTML on the record
 
-Two supported options (you can use either; the sender prefers the property):
+Two supported options — the sender tries the **file first**, then the property:
 
-1. **`html` long-text property** — paste the raw HTML directly. Simplest.
-   Watch HubSpot's property size limit for very large emails.
-2. **`html_file_id` property** — a HubSpot **Files** file id (or a full URL) to
-   an `.html` file. The sender fetches it via the Files API. Use this for large
-   emails or when a designer maintains the file separately.
+1. **`body_html_file` (file upload) — preferred.** Upload the `.html` file. It
+   holds true, unescaped HTML. The sender fetches it via the Files API
+   *signed-url* endpoint (works for private CRM attachments). Best for full
+   templates.
+2. **`body_html_text` (rich text) — fallback.** Fine for simple formatted
+   snippets. **Do not paste a full HTML template's source here** — the rich-text
+   editor escapes the markup (`&lt;div&gt;…`), so the recipient sees the tags as
+   text. Watch HubSpot's property size limit too.
 
-If both are set, the inline `html` property wins.
+If the file is present it wins; otherwise the rich-text property is used.

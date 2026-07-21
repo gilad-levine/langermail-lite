@@ -4,19 +4,21 @@
  * LangerMail Lite — HubSpot Custom Code Action (Design A)
  * -------------------------------------------------------
  * Paste this whole file into an Operations Hub "Custom code" workflow action.
- * It reads a "Transactional Email" custom object, resolves its HTML (from a
- * long-text property OR an attached file), strips the footer, substitutes
- * {{merge_tags}} from the enrolled contact, and sends via AWS SES — all with
- * zero external dependencies (Node built-in `crypto` + global `fetch`).
+ * It reads a "Transactional Email" custom object, resolves its HTML (from the
+ * attached file, falling back to the rich-text property), strips a
+ * marker-delimited footer, substitutes {{merge_tags}} from the enrolled
+ * contact, and sends via AWS SES — with zero external dependencies (Node
+ * built-in `https` + `crypto`, so it runs on any HubSpot code-step runtime and
+ * can't break on the package allowlist).
  *
  * ── Secrets to configure on the code action ────────────────────────────────
- *   HUBSPOT_TOKEN                    private-app access token (scopes below)
+ *   legacyApp                        HubSpot private-app access token (scopes below)
  *   AWS_ACCESS_KEY_ID                SES sender IAM key id
  *   AWS_SECRET_ACCESS_KEY            SES sender IAM secret
  *   AWS_REGION                       SES region, e.g. us-east-1  (must match
  *                                    where mail.langerlabs.com is verified)
- *   TRANSACTIONAL_EMAIL_OBJECT_TYPE  custom object type — fully-qualified name
- *                                    (p12345_transactional_email) or id (2-1234567)
+ *   TRANSACTIONAL_EMAIL_OBJECT_TYPE  (optional) custom object type id/FQN;
+ *                                    defaults to DEFAULT_OBJECT_TYPE below
  *   SES_CONFIGURATION_SET            (optional) for open/click/bounce tracking
  *
  * Private-app scopes: crm.objects.custom.read, crm.objects.contacts.read, files
@@ -33,16 +35,21 @@
  *   error       message on failure
  */
 
+const https = require('https');
 const crypto = require('crypto');
+
+// Default custom object type (Transactional Email). Override with the
+// TRANSACTIONAL_EMAIL_OBJECT_TYPE secret if it ever changes.
+const DEFAULT_OBJECT_TYPE = '2-66209712';
 
 // ── Property names on the Transactional Email object (override here if yours differ) ──
 const PROPS = {
-  subject: 'subject',
+  subject: 'subject_line',
   fromName: 'from_name',
-  fromEmail: 'from_email',
-  replyTo: 'reply_to',
-  html: 'html',              // long-text property holding raw HTML
-  htmlFileId: 'html_file_id', // file id OR full URL to the HTML file
+  fromEmail: 'from_address',
+  replyTo: 'replyto_address',
+  html: 'body_html_text', // rich-text property (fallback; escapes raw HTML source)
+  htmlFile: 'body_html_file', // file-upload property (preferred; true raw HTML)
 };
 
 // Input fields that control the send rather than acting as merge tokens.
@@ -70,6 +77,7 @@ function mergeTags(input, tokens) {
  * marker the code strips wholesale:
  *   <!--FOOTER_START--> … <!--FOOTER_END-->   (recommended — survives nesting)
  * A single, non-nested <div data-footer>…</div> is also removed as a fallback.
+ * HTML without either marker is returned unchanged.
  */
 function stripFooter(html) {
   if (html == null) return '';
@@ -112,17 +120,43 @@ function buildEmailPayload({ subject, html, fromName, fromEmail, replyTo, toEmai
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// HTTPS helper (Node built-in; follows one redirect; no external deps)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function httpsRequest(urlString, { method = 'GET', headers = {}, body } = {}, redirectsLeft = 1) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(urlString);
+    const req = https.request(
+      { method, hostname: u.hostname, path: u.pathname + u.search, headers },
+      (res) => {
+        if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location && redirectsLeft > 0) {
+          res.resume();
+          const next = new URL(res.headers.location, urlString).toString();
+          return resolve(httpsRequest(next, { method, headers, body }, redirectsLeft - 1));
+        }
+        let data = '';
+        res.on('data', (c) => (data += c));
+        res.on('end', () => resolve({ status: res.statusCode, body: data }));
+      },
+    );
+    req.on('error', reject);
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // HubSpot API
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function hubspotGet(path, token) {
-  const res = await fetch(`https://api.hubapi.com${path}`, {
+  const res = await httpsRequest(`https://api.hubapi.com${path}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!res.ok) {
-    throw new Error(`HubSpot GET ${path} → ${res.status} ${await res.text()}`);
+  if (res.status < 200 || res.status >= 300) {
+    throw new Error(`HubSpot GET ${path} -> ${res.status} ${res.body}`);
   }
-  return res.json();
+  return JSON.parse(res.body);
 }
 
 /** Fetch the Transactional Email record's properties. */
@@ -136,23 +170,28 @@ async function fetchTransactionalEmail(objectType, id, token) {
 }
 
 /**
- * Resolve the email HTML from the record. Prefers the long-text property; falls
- * back to a file id (via the Files API) or a direct URL.
+ * Resolve the email HTML from the record. Prefers the uploaded file (true raw
+ * HTML) and falls back to the rich-text property. Private CRM-attached files
+ * need a *signed* download URL — the plain metadata `url` points at an
+ * authenticated HubSpot page (a JS shell), not the file bytes.
  */
 async function resolveHtml(props, token) {
+  const ref = props[PROPS.htmlFile];
+  if (ref && String(ref).trim()) {
+    const url = /^https?:\/\//i.test(ref)
+      ? ref
+      : (await hubspotGet(`/files/v3/files/${ref}/signed-url`, token)).url;
+    const res = await httpsRequest(url);
+    if (res.status < 200 || res.status >= 300) {
+      throw new Error(`Fetch HTML file ${ref} -> ${res.status} ${res.body.slice(0, 200)}`);
+    }
+    return res.body;
+  }
+
   const inline = props[PROPS.html];
   if (inline && inline.trim()) return inline;
 
-  const ref = props[PROPS.htmlFileId];
-  if (!ref || !String(ref).trim()) {
-    throw new Error(
-      `No HTML on the record: set the "${PROPS.html}" property or "${PROPS.htmlFileId}" (file id or URL)`,
-    );
-  }
-  const url = /^https?:\/\//i.test(ref) ? ref : (await hubspotGet(`/files/v3/files/${ref}`, token)).url;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Fetch HTML file → ${res.status} ${res.statusText}`);
-  return res.text();
+  throw new Error(`No HTML: "${PROPS.htmlFile}" and "${PROPS.html}" are both empty`);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -172,8 +211,7 @@ async function sesSendEmail(payload, { accessKeyId, secretAccessKey, sessionToke
   const path = '/v2/email/outbound-emails';
   const body = JSON.stringify(payload);
 
-  const now = new Date();
-  const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, ''); // YYYYMMDDTHHMMSSZ
+  const amzDate = new Date().toISOString().replace(/[:-]|\.\d{3}/g, ''); // YYYYMMDDTHHMMSSZ
   const dateStamp = amzDate.slice(0, 8);
 
   const headers = {
@@ -189,22 +227,9 @@ async function sesSendEmail(payload, { accessKeyId, secretAccessKey, sessionToke
     .map((h) => `${h}:${headers[h]}\n`)
     .join('');
 
-  const canonicalRequest = [
-    'POST',
-    path,
-    '', // no query string
-    canonicalHeaders,
-    signedHeaders,
-    sha256hex(body),
-  ].join('\n');
-
+  const canonicalRequest = ['POST', path, '', canonicalHeaders, signedHeaders, sha256hex(body)].join('\n');
   const scope = `${dateStamp}/${region}/${service}/aws4_request`;
-  const stringToSign = [
-    'AWS4-HMAC-SHA256',
-    amzDate,
-    scope,
-    sha256hex(canonicalRequest),
-  ].join('\n');
+  const stringToSign = ['AWS4-HMAC-SHA256', amzDate, scope, sha256hex(canonicalRequest)].join('\n');
 
   const kDate = hmac(`AWS4${secretAccessKey}`, dateStamp);
   const kRegion = hmac(kDate, region);
@@ -216,17 +241,16 @@ async function sesSendEmail(payload, { accessKeyId, secretAccessKey, sessionToke
     `AWS4-HMAC-SHA256 Credential=${accessKeyId}/${scope}, ` +
     `SignedHeaders=${signedHeaders}, Signature=${signature}`;
 
-  const res = await fetch(`https://${host}${path}`, {
+  const res = await httpsRequest(`https://${host}${path}`, {
     method: 'POST',
     headers: { ...headers, Authorization: authorization },
     body,
   });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`SES send → ${res.status} ${text}`);
+  if (res.status < 200 || res.status >= 300) throw new Error(`SES send -> ${res.status} ${res.body}`);
   try {
-    return JSON.parse(text);
+    return JSON.parse(res.body);
   } catch {
-    return { raw: text };
+    return { raw: res.body };
   }
 }
 
@@ -240,16 +264,16 @@ exports.main = async (event, callback) => {
     const env = process.env;
     const inputs = event.inputFields || {};
 
-    const objectType = env.TRANSACTIONAL_EMAIL_OBJECT_TYPE;
-    const token = env.HUBSPOT_TOKEN;
+    const objectType = env.TRANSACTIONAL_EMAIL_OBJECT_TYPE || DEFAULT_OBJECT_TYPE;
+    const token = env.legacyApp || env.HUBSPOT_TOKEN;
     const emailId = inputs.transactional_email_id;
     const toEmail = inputs.email;
 
-    if (!objectType) throw new Error('Missing secret TRANSACTIONAL_EMAIL_OBJECT_TYPE');
-    if (!token) throw new Error('Missing secret HUBSPOT_TOKEN');
+    if (!token) throw new Error('Missing HubSpot token (secret "legacyApp")');
     if (!emailId) throw new Error('Missing input field transactional_email_id');
     if (!toEmail) throw new Error('Missing input field email (recipient)');
 
+    console.log(`Reading ${objectType}/${emailId} ...`);
     const props = await fetchTransactionalEmail(objectType, emailId, token);
     const html = await resolveHtml(props, token);
 
@@ -264,19 +288,22 @@ exports.main = async (event, callback) => {
       configurationSet: env.SES_CONFIGURATION_SET,
     });
 
-    if (!payload.FromEmailAddress || payload.FromEmailAddress === 'undefined') {
+    if (!payload.FromEmailAddress || /(^|<)undefined(>|$)/.test(payload.FromEmailAddress)) {
       throw new Error(`Record is missing "${PROPS.fromEmail}"`);
     }
 
+    console.log(`Sending "${payload.Content.Simple.Subject.Data}" to ${toEmail} ...`);
     const result = await sesSendEmail(payload, {
       accessKeyId: env.AWS_ACCESS_KEY_ID,
       secretAccessKey: env.AWS_SECRET_ACCESS_KEY,
       sessionToken: env.AWS_SESSION_TOKEN,
       region: env.AWS_REGION,
     });
+    console.log('SES OK. MessageId:', result.MessageId || '(none)');
 
     return done({ status: 'sent', messageId: result.MessageId || '', error: '' });
   } catch (err) {
+    console.error('FAILED:', err && err.message ? err.message : err);
     return done({ status: 'error', messageId: '', error: String(err && err.message ? err.message : err) });
   }
 };

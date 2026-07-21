@@ -8,8 +8,8 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test",
-    "send-test": "node scripts/send-test.js"
+    "test": "node --test test/*.test.js",
+    "send-test": "node scripts/ses-smoke.js"
   },
   "license": "UNLICENSED"
 }

@@ -11,7 +11,7 @@
  * Usage:
  *   AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... AWS_REGION=us-east-1 \
  *   FROM_EMAIL=noreply@mail.langerlabs.com TO_EMAIL=you@example.com \
- *   npm run send-test
+ *   npm run send-test   (scripts/ses-smoke.js)
  *
  * Optional: FROM_NAME, REPLY_TO, SES_CONFIGURATION_SET, SUBJECT, AWS_SESSION_TOKEN
  */
