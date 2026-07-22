@@ -102,61 +102,69 @@ Use **Test action** with a sample contact (or enroll one). Read the logs
 ## Add inputs & map tokens
 
 **Goal:** a `{{token}}` in your email HTML gets replaced, per recipient, with a
-value from the contact.
-
-There are three pieces, and they must line up:
+value from the contact. There are **four** pieces, and they line up like this:
 
 ```
-  {{custom.variable}}         ← token in the email HTML
-        │  matches
-  input field: custom_variable ← added in the code action
-        │  mapped to
-  Contact property: "Variable" ← the actual data
+  {{firstname}}                  ← 1. token in the email HTML
+        │
+  input field "firstname"        ← 2. added in the action, mapped to a contact property
+        │
+  firstname: event.inputFields['firstname']   ← 3. defineVariables (top of code)
+        │
+  TOKEN_MAP: { firstname: 'firstname' }        ← 4. token → variable (top of code)
 ```
 
-### Step A — put the token in the email
+### Step 1 — put the token in the email
 
 In the email HTML, write the token as literal text, e.g. `{{firstname}}` or
 `{{custom.variable}}`. (See [Authoring](#authoring-the-html-important) for why it
 must be a *literal custom* token, not a HubSpot personalization token.)
 
-### Step B — add the input field in the code action
+### Step 2 — add the input field in the action
 
 In the custom code action, find the **"Property to include in code"** panel
-(HubSpot's inputs UI, next to the code editor). For each token:
+(next to the code editor). For each value:
 
 1. Click **Add property**.
-2. **Property to include:** choose the contact property that holds the value
+2. **Property to include:** the contact property that holds the value
    (e.g. *First name*).
-3. **Input name:** the name the code sees. **Name it to match the token**, with
-   dots/spaces replaced by underscores:
-
-   | Token in HTML | Input name to use |
-   |---|---|
-   | `{{firstname}}` | `firstname` |
-   | `{{custom.variable}}` | `custom_variable` |
-   | `{{order.id}}` | `order_id` |
-
-   Matching is **case-insensitive** and dot/space → underscore is automatic, so
-   these usually "just work" with no code change.
+3. **Input name:** the name the code reads (e.g. `firstname`). Use letters,
+   numbers, and underscores.
 
 Always add one input named **`email`** mapped to **Contact → Email** — that's the
-recipient (required).
+recipient (required, and handled for you as `{{email}}`).
 
-### Step C — (only if a name can't match) use `TOKEN_MAP`
+### Step 3 — define the variable (top of code)
 
-If a token can't be named to match an input (e.g. the token is
-`{{custom.first}}` but your input is `firstname`), add an entry to `TOKEN_MAP`
-at the top of the code:
+In the **CONFIGURE ME** block, add one line per value inside `defineVariables`,
+reading the input field you just created:
+
+```js
+function defineVariables(event) {
+  return {
+    firstname:       event.inputFields['firstname'],
+    custom_variable: event.inputFields['custom_variable'],
+    // company:      event.inputFields['company'],
+  };
+}
+```
+
+### Step 4 — map the token to the variable (top of code)
+
+In `TOKEN_MAP`, connect each email token (left) to a variable from step 3
+(right):
 
 ```js
 const TOKEN_MAP = {
-  'custom.first': 'firstname',   // token  →  input field name
-  'order.id':     'order_id',
+  firstname:         'firstname',        // {{firstname}}        → firstname
+  'custom.variable': 'custom_variable',  // {{custom.variable}}  → custom_variable
 };
 ```
 
-`TOKEN_MAP` is checked first; otherwise the automatic name matching applies.
+> **Shortcut:** if the token is spelled exactly like the variable
+> (`{{firstname}}` ↔ `firstname`), the `TOKEN_MAP` line is optional — it resolves
+> by name. Add a line whenever the token and variable names differ, e.g.
+> `'custom.variable': 'promo'`.
 
 ### How do I know which tokens an email needs?
 
@@ -247,7 +255,8 @@ on in the workflow.
 | Thing | Where |
 |---|---|
 | Which email this workflow sends | `RECORD_ID` (top of code) |
-| Token → input overrides | `TOKEN_MAP` (top of code) |
+| Define personalization values from inputs | `defineVariables` (top of code) |
+| Map `{{tokens}}` → variables | `TOKEN_MAP` (top of code) |
 | Verbose logging on/off | `DEBUG` (top of code) |
 | Object property names | `PROPS` (top of code) |
 | HubSpot token, AWS keys, region | **Secrets** panel (not the code) |

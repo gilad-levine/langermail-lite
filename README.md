@@ -107,25 +107,25 @@ Store the token as the code-action secret named **`legacyApp`**.
    | `TRANSACTIONAL_EMAIL_OBJECT_TYPE` | *(optional)* defaults to `2-66209712` |
    | `SES_CONFIGURATION_SET` | *(optional)* open/click/bounce tracking |
 
-4. **Baked-in config** — edit these constants at the top of the action:
-   - `RECORD_ID` — the Transactional Email record **this** workflow sends. It's
-     hardcoded, so each email template gets its own workflow with its own
-     `RECORD_ID`.
-   - `TOKEN_MAP` — optional `{{token}}` → input-field-name overrides (usually
-     empty; auto-normalized matching covers the common case).
-   - `DEBUG` — set `true` for verbose per-stage logging.
+4. **Baked-in config** (the `CONFIGURE ME` block at the top of the action):
+   - `RECORD_ID` — the Transactional Email record **this** workflow sends. One
+     workflow = one email.
+   - `defineVariables(event)` — pull each personalization value from the inputs,
+     e.g. `firstname: event.inputFields['firstname']`.
+   - `TOKEN_MAP` — connect each `{{token}}` to a variable, e.g.
+     `firstname: 'firstname'` (optional when the names already match).
+   - `DEBUG` — `true` for verbose per-stage logging.
 
 5. **Input fields** (contact-triggered workflow):
 
    | Input | Map to | Required |
    |---|---|---|
    | `email` | `contact.email` (the recipient) | ✅ |
-   | `firstname`, `custom_variable`, … | each contact property referenced as a `{{token}}` | as needed |
+   | `firstname`, `custom_variable`, … | each contact property you reference | as needed |
 
-   Any input other than `email` / `hs_object_id` becomes a merge token. A dotted
-   HTML token maps to the underscore input name (`{{custom.variable}}` →
-   `custom_variable`), case-insensitive; use `TOKEN_MAP` for anything that can't
-   auto-match.
+   Personalization is explicit: add an input, read it in `defineVariables`, then
+   map the email's `{{token}}` to that variable in `TOKEN_MAP`. See the
+   [User Guide](docs/USER_GUIDE.md#add-inputs--map-tokens).
 
 6. **Output fields** (optional, for branching/logging): `status`, `messageId`,
    `error`.

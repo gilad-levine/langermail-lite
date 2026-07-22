@@ -6,7 +6,6 @@ const assert = require('node:assert/strict');
 const {
   mergeTags,
   stripFooter,
-  tokensFromInputs,
   buildEmailPayload,
   looksEscaped,
   decodeHtmlEntities,
@@ -15,6 +14,17 @@ const {
   normalizeKey,
   lookupToken,
 } = require('../hubspot/custom-code-action.js');
+
+// Mirrors the two-step config model in the action: define variables from the
+// workflow inputs, then map {{tokens}} to those variables. Kept here so a
+// regression in that flow is caught by tests.
+function defineVariablesExample(event) {
+  return {
+    firstname: event.inputFields['firstname'],
+    custom_variable: event.inputFields['custom_variable'],
+  };
+}
+const EXAMPLE_TOKEN_MAP = { firstname: 'firstname', 'custom.variable': 'custom_variable' };
 
 test('mergeTags substitutes known tokens', () => {
   assert.equal(mergeTags('Hi {{firstname}}!', { firstname: 'Ada' }), 'Hi Ada!');
@@ -183,15 +193,18 @@ test('unwrapViewSource reconstructs source from a saved view-source page', () =>
   assert.equal(stripFooter(recovered).includes('FOOTER'), false);
 });
 
-test('tokensFromInputs drops reserved control fields', () => {
-  const tokens = tokensFromInputs({
-    transactional_email_id: '123',
-    email: 'a@b.com',
-    hs_object_id: '999',
-    firstname: 'Ada',
-    company: 'Langer',
-  });
-  assert.deepEqual(tokens, { firstname: 'Ada', company: 'Langer', email: 'a@b.com' });
+test('define-variables + token-map flow renders both token styles', () => {
+  const event = { inputFields: { email: 'a@b.com', firstname: 'Ada', custom_variable: 'PROMO-42' } };
+  const vars = { email: event.inputFields.email, ...defineVariablesExample(event) };
+  const html = 'Hi {{firstname}} ({{email}}) code {{custom.variable}}';
+  assert.equal(mergeTags(html, vars, EXAMPLE_TOKEN_MAP), 'Hi Ada (a@b.com) code PROMO-42');
+});
+
+test('token-map entry is optional when token name equals variable name', () => {
+  const event = { inputFields: { firstname: 'Ada' } };
+  const vars = defineVariablesExample(event);
+  // no map entry for firstname → still resolves by matching name
+  assert.equal(mergeTags('{{firstname}}', vars, {}), 'Ada');
 });
 
 test('buildEmailPayload merges subject + html and strips footer', () => {

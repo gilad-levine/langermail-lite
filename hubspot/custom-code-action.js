@@ -27,21 +27,33 @@ const crypto = require('crypto');
 //    (…/objects/2-66209712/record/<RECORD_ID>). One workflow = one email.
 const RECORD_ID = '59082949729';
 
-// 2) TOKEN MAP — connect the {{tokens}} in your email HTML to the workflow
-//    input fields you create (see USER_GUIDE "Add inputs & map tokens").
-//      LEFT  = the token exactly as written in the email, e.g. 'custom.first'
-//      RIGHT = the input field name you added in the action, e.g. 'firstname'
-//    You usually leave this EMPTY: tokens auto-match by lowercasing and turning
-//    dots/spaces into "_", so {{custom.variable}} already finds an input named
-//    `custom_variable`. Add an entry only when a token can't auto-match.
-//    Example:  const TOKEN_MAP = { 'custom.first': 'firstname', 'order.id': 'order_id' };
-const TOKEN_MAP = {};
+// 2) VARIABLES — pull each personalization value out of the workflow input
+//    fields (the action's "Property to include in code" panel). Add one line
+//    per value:   variableName: event.inputFields['<input field name>']
+//    `email` (the recipient) is added for you automatically.
+function defineVariables(event) {
+  return {
+    firstname: event.inputFields['firstname'],
+    custom_variable: event.inputFields['custom_variable'],
+    // add more, e.g.:
+    // company: event.inputFields['company'],
+  };
+}
 
-// 3) DEBUG — verbose per-stage logging while you set things up. Flip to false
+// 3) TOKEN MAP — connect each {{token}} in your email to a variable from step 2.
+//      LEFT  = the token exactly as written in the email HTML
+//      RIGHT = a variable name defined above
+//    (If the token name already equals the variable name, the entry is optional.)
+const TOKEN_MAP = {
+  firstname: 'firstname',
+  'custom.variable': 'custom_variable',
+};
+
+// 4) DEBUG — verbose per-stage logging while you set things up. Flip to false
 //    once the workflow is sending correctly.
 const DEBUG = true;
 
-// 4) PROPERTY NAMES — only change these if your Transactional Email object uses
+// 5) PROPERTY NAMES — only change these if your Transactional Email object uses
 //    different internal property names than the defaults below.
 const PROPS = {
   subject: 'subject_line',
@@ -62,9 +74,6 @@ const OBJECT_TYPE = process.env.TRANSACTIONAL_EMAIL_OBJECT_TYPE || '2-66209712';
 const HUBSPOT_TOKEN = process.env.legacyApp || process.env.HUBSPOT_TOKEN;
 
 /* ═══════════════════════════ end configuration ═══════════════════════════ */
-
-// Input fields that control the send rather than acting as merge tokens.
-const RESERVED_INPUTS = new Set(['transactional_email_id', 'email', 'hs_object_id']);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pure helpers (unit-tested — see test/render.test.js)
@@ -210,18 +219,6 @@ function stripFooter(html) {
   }
 
   return out.replace(/<div[^>]*\bdata-footer\b[^>]*>[\s\S]*?<\/div>/gi, '');
-}
-
-/** Build the contact merge-token map from the workflow input fields. */
-function tokensFromInputs(inputFields) {
-  const tokens = {};
-  for (const [key, value] of Object.entries(inputFields || {})) {
-    if (RESERVED_INPUTS.has(key)) continue;
-    tokens[key] = value;
-  }
-  // Make the recipient address available as {{email}} too.
-  if (inputFields && inputFields.email != null) tokens.email = inputFields.email;
-  return tokens;
 }
 
 /**
@@ -407,7 +404,8 @@ exports.main = async (event, callback) => {
   const dbg = (...a) => DEBUG && console.log('[debug]', ...a);
   try {
     const env = process.env;
-    const inputs = event.inputFields || {};
+    event.inputFields = event.inputFields || {};
+    const inputs = event.inputFields;
 
     // Fail fast with a clear message for each missing prerequisite.
     stage = 'validate-config';
@@ -435,15 +433,17 @@ exports.main = async (event, callback) => {
     stage = 'resolve-html';
     const html = await resolveHtml(props, HUBSPOT_TOKEN);
 
-    // Surface which tokens the template uses and which have no matching input.
+    // Build the personalization variables (config: defineVariables), with the
+    // recipient available as {{email}}. Then surface which template tokens have
+    // no matching variable.
     stage = 'merge-tokens';
-    const tokens = tokensFromInputs(inputs);
+    const tokens = { email: inputs.email, ...defineVariables(event) };
     const detected = findTokens(`${props[PROPS.subject] || ''} ${html}`);
     if (detected.length) {
       const unmatched = detected.filter((t) => lookupToken(tokens, t, TOKEN_MAP) === undefined);
       console.log(`Tokens in template: ${detected.join(', ')}`);
       if (unmatched.length) console.log(`Unmatched tokens (sent empty): ${unmatched.join(', ')}`);
-      else console.log('All template tokens matched an input.');
+      else console.log('All template tokens matched a variable.');
     }
 
     stage = 'build-payload';
@@ -491,6 +491,5 @@ module.exports.stripFooter = stripFooter;
 module.exports.looksEscaped = looksEscaped;
 module.exports.decodeHtmlEntities = decodeHtmlEntities;
 module.exports.unwrapViewSource = unwrapViewSource;
-module.exports.tokensFromInputs = tokensFromInputs;
 module.exports.buildEmailPayload = buildEmailPayload;
 module.exports.sesSendEmail = sesSendEmail;
