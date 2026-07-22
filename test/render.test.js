@@ -66,6 +66,20 @@ test('lookupToken returns undefined for a genuinely missing token', () => {
   assert.equal(lookupToken({ firstname: 'A' }, 'company'), undefined);
 });
 
+test('lookupToken honors an explicit tokenMap (token name -> input name)', () => {
+  const tokens = { firstname: 'Ada' };
+  assert.equal(lookupToken(tokens, 'custom.first', { 'custom.first': 'firstname' }), 'Ada');
+});
+
+test('mergeTags applies tokenMap overrides ahead of normalized matching', () => {
+  const html = '<p>{{custom.first}}</p>';
+  assert.equal(mergeTags(html, { firstname: 'Ada' }, { 'custom.first': 'firstname' }), '<p>Ada</p>');
+});
+
+test('mergeTags without a tokenMap still auto-normalizes', () => {
+  assert.equal(mergeTags('{{custom.variable}}', { custom_variable: 'V' }), 'V');
+});
+
 test('findTokens returns unique token names in first-seen order', () => {
   assert.deepEqual(
     findTokens('Hi {{firstname}}, your code {{custom.variable}} and {{firstname}} again'),

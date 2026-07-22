@@ -17,17 +17,17 @@
  *   AWS_SECRET_ACCESS_KEY            SES sender IAM secret
  *   AWS_REGION                       SES region, e.g. us-east-1  (must match
  *                                    where mail.langerlabs.com is verified)
- *   TRANSACTIONAL_EMAIL_OBJECT_TYPE  (optional) custom object type id/FQN;
- *                                    defaults to DEFAULT_OBJECT_TYPE below
  *   SES_CONFIGURATION_SET            (optional) for open/click/bounce tracking
  *
  * Private-app scopes: crm.objects.custom.read, crm.objects.contacts.read, files
  *
- * ── Input fields to map in the workflow ────────────────────────────────────
- *   transactional_email_id   → the Transactional Email record id (required)
- *   email                    → contact.email (required; the recipient)
- *   <anything else>          → becomes a merge token, e.g. map contact.firstname
- *                              so the HTML can use {{firstname}}
+ * ── Baked-in per-workflow config (edit RECORD_ID for each email) ────────────
+ *   RECORD_ID   the Transactional Email record this workflow sends
+ *   TOKEN_MAP   optional {{token}} → input-field-name overrides
+ *
+ * ── Input fields to map in the workflow (contact-triggered) ─────────────────
+ *   email            → contact.email (required; the recipient)
+ *   <body variables> → map each contact property you reference as {{token}}
  *
  * ── Output fields ──────────────────────────────────────────────────────────
  *   status      "sent" | "error"
@@ -38,9 +38,16 @@
 const https = require('https');
 const crypto = require('crypto');
 
-// Default custom object type (Transactional Email). Override with the
-// TRANSACTIONAL_EMAIL_OBJECT_TYPE secret if it ever changes.
-const DEFAULT_OBJECT_TYPE = '2-66209712';
+// ── Per-workflow config (baked in) ───────────────────────────────────────────
+const OBJECT_TYPE = process.env.TRANSACTIONAL_EMAIL_OBJECT_TYPE || '2-66209712';
+const RECORD_ID = '59082949729'; // ← the Transactional Email record for THIS workflow
+const DEBUG = false; // set true for verbose per-stage logging
+
+// Optional explicit map of HTML token name → workflow input-field name. Only
+// needed when a token can't be auto-matched (auto matching lowercases and turns
+// non-alphanumerics into "_", so {{custom.variable}} already finds input
+// `custom_variable`). Example: { 'custom.first': 'firstname' }.
+const TOKEN_MAP = {};
 
 // ── Property names on the Transactional Email object (override here if yours differ) ──
 const PROPS = {
@@ -67,15 +74,23 @@ function normalizeKey(s) {
 }
 
 /**
- * Look up a token value from the input map, tolerantly. Tries the exact name,
- * then a normalized match — so `{{custom.variable}}` in the HTML resolves to a
- * workflow input named `custom_variable` (HubSpot input names can't contain
- * dots), and casing/spacing differences don't matter. Unknown → undefined.
+ * Look up a token value from the input map, tolerantly:
+ *   1. an explicit `tokenMap` entry (HTML token name → input field name),
+ *   2. the exact token name,
+ *   3. a normalized match — so `{{custom.variable}}` resolves to a workflow
+ *      input named `custom_variable` (HubSpot input names can't contain dots),
+ *      case/spacing insensitive.
+ * Unknown → undefined.
  */
-function lookupToken(tokens, key) {
-  if (Object.prototype.hasOwnProperty.call(tokens, key)) return tokens[key];
+function lookupToken(tokens, key, tokenMap) {
+  const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+  if (tokenMap) {
+    const mapped = has(tokenMap, key) ? tokenMap[key] : tokenMap[normalizeKey(key)];
+    if (mapped != null && has(tokens, mapped)) return tokens[mapped];
+  }
+  if (has(tokens, key)) return tokens[key];
   const nk = normalizeKey(key);
-  if (Object.prototype.hasOwnProperty.call(tokens, nk)) return tokens[nk];
+  if (has(tokens, nk)) return tokens[nk];
   for (const k of Object.keys(tokens)) {
     if (normalizeKey(k) === nk) return tokens[k];
   }
@@ -96,10 +111,10 @@ function findTokens(text) {
  * see lookupToken). Unknown tokens render as an empty string. Whitespace inside
  * the braces is tolerated: {{firstname}} and {{ firstname }} are equivalent.
  */
-function mergeTags(input, tokens) {
+function mergeTags(input, tokens, tokenMap) {
   if (input == null) return '';
   return String(input).replace(new RegExp(TOKEN_RE.source, 'g'), (_, key) => {
-    const value = lookupToken(tokens, key.trim());
+    const value = lookupToken(tokens, key.trim(), tokenMap);
     return value === undefined || value === null ? '' : String(value);
   });
 }
@@ -209,15 +224,15 @@ function tokensFromInputs(inputFields) {
  * Assemble the SES v2 SendEmail request body. `subject` and `html` are merged
  * against `tokens`; the footer is stripped from the HTML first.
  */
-function buildEmailPayload({ subject, html, fromName, fromEmail, replyTo, toEmail, tokens, configurationSet }) {
+function buildEmailPayload({ subject, html, fromName, fromEmail, replyTo, toEmail, tokens, tokenMap, configurationSet }) {
   const from = fromName ? `${fromName} <${fromEmail}>` : fromEmail;
   const body = {
     FromEmailAddress: from,
     Destination: { ToAddresses: [toEmail] },
     Content: {
       Simple: {
-        Subject: { Data: mergeTags(subject, tokens), Charset: 'UTF-8' },
-        Body: { Html: { Data: mergeTags(stripFooter(html), tokens), Charset: 'UTF-8' } },
+        Subject: { Data: mergeTags(subject, tokens, tokenMap), Charset: 'UTF-8' },
+        Body: { Html: { Data: mergeTags(stripFooter(html), tokens, tokenMap), Charset: 'UTF-8' } },
       },
     },
   };
@@ -383,60 +398,83 @@ async function sesSendEmail(payload, { accessKeyId, secretAccessKey, sessionToke
 
 exports.main = async (event, callback) => {
   const done = (fields) => (typeof callback === 'function' ? callback({ outputFields: fields }) : fields);
+  const t0 = Date.now();
+  let stage = 'init';
+  const dbg = (...a) => DEBUG && console.log('[debug]', ...a);
   try {
     const env = process.env;
     const inputs = event.inputFields || {};
 
-    const objectType = env.TRANSACTIONAL_EMAIL_OBJECT_TYPE || DEFAULT_OBJECT_TYPE;
+    // Fail fast with a clear message for each missing prerequisite.
+    stage = 'validate-config';
     const token = env.legacyApp || env.HUBSPOT_TOKEN;
-    const emailId = inputs.transactional_email_id;
+    const missing = [];
+    if (!token) missing.push('secret legacyApp');
+    if (!env.AWS_ACCESS_KEY_ID) missing.push('secret AWS_ACCESS_KEY_ID');
+    if (!env.AWS_SECRET_ACCESS_KEY) missing.push('secret AWS_SECRET_ACCESS_KEY');
+    if (!env.AWS_REGION) missing.push('secret AWS_REGION');
+    if (missing.length) throw new Error(`Missing configuration: ${missing.join(', ')}`);
+
     const toEmail = inputs.email;
+    if (!toEmail) throw new Error('Missing input field "email" (map it to Contact → Email)');
 
-    if (!token) throw new Error('Missing HubSpot token (secret "legacyApp")');
-    if (!emailId) throw new Error('Missing input field transactional_email_id');
-    if (!toEmail) throw new Error('Missing input field email (recipient)');
+    dbg('object', OBJECT_TYPE, 'record', RECORD_ID, 'region', env.AWS_REGION, 'to', toEmail);
+    dbg('input fields:', Object.keys(inputs).join(', ') || '(none)');
 
-    console.log(`Reading ${objectType}/${emailId} ...`);
-    const props = await fetchTransactionalEmail(objectType, emailId, token);
+    stage = 'read-record';
+    console.log(`Reading ${OBJECT_TYPE}/${RECORD_ID} ...`);
+    const props = await fetchTransactionalEmail(OBJECT_TYPE, RECORD_ID, token);
+    dbg('record props:', JSON.stringify({
+      subject: props[PROPS.subject], from: props[PROPS.fromEmail],
+      has_file: !!props[PROPS.htmlFile], has_text: !!props[PROPS.html],
+    }));
+
+    stage = 'resolve-html';
     const html = await resolveHtml(props, token);
 
     // Surface which tokens the template uses and which have no matching input.
+    stage = 'merge-tokens';
     const tokens = tokensFromInputs(inputs);
     const detected = findTokens(`${props[PROPS.subject] || ''} ${html}`);
     if (detected.length) {
-      const unmatched = detected.filter((t) => lookupToken(tokens, t) === undefined);
+      const unmatched = detected.filter((t) => lookupToken(tokens, t, TOKEN_MAP) === undefined);
       console.log(`Tokens in template: ${detected.join(', ')}`);
       if (unmatched.length) console.log(`Unmatched tokens (sent empty): ${unmatched.join(', ')}`);
+      else console.log('All template tokens matched an input.');
     }
 
+    stage = 'build-payload';
+    const fromEmail = props[PROPS.fromEmail];
+    if (!fromEmail) throw new Error(`Record ${RECORD_ID} is missing "${PROPS.fromEmail}"`);
     const payload = buildEmailPayload({
       subject: props[PROPS.subject] || '(no subject)',
       html,
       fromName: props[PROPS.fromName],
-      fromEmail: props[PROPS.fromEmail],
+      fromEmail,
       replyTo: props[PROPS.replyTo],
       toEmail,
       tokens,
+      tokenMap: TOKEN_MAP,
       configurationSet: env.SES_CONFIGURATION_SET,
     });
+    dbg('payload bytes:', JSON.stringify(payload).length, 'html chars:', payload.Content.Simple.Body.Html.Data.length);
 
-    if (!payload.FromEmailAddress || /(^|<)undefined(>|$)/.test(payload.FromEmailAddress)) {
-      throw new Error(`Record is missing "${PROPS.fromEmail}"`);
-    }
-
-    console.log(`Sending "${payload.Content.Simple.Subject.Data}" to ${toEmail} ...`);
+    stage = 'ses-send';
+    console.log(`Sending "${payload.Content.Simple.Subject.Data}" from ${payload.FromEmailAddress} to ${toEmail} ...`);
     const result = await sesSendEmail(payload, {
       accessKeyId: env.AWS_ACCESS_KEY_ID,
       secretAccessKey: env.AWS_SECRET_ACCESS_KEY,
       sessionToken: env.AWS_SESSION_TOKEN,
       region: env.AWS_REGION,
     });
-    console.log('SES OK. MessageId:', result.MessageId || '(none)');
+    console.log(`SES OK. MessageId: ${result.MessageId || '(none)'} (${Date.now() - t0}ms)`);
 
     return done({ status: 'sent', messageId: result.MessageId || '', error: '' });
   } catch (err) {
-    console.error('FAILED:', err && err.message ? err.message : err);
-    return done({ status: 'error', messageId: '', error: String(err && err.message ? err.message : err) });
+    const msg = err && err.message ? err.message : String(err);
+    console.error(`FAILED at stage "${stage}" after ${Date.now() - t0}ms: ${msg}`);
+    if (err && err.stack) console.error(err.stack);
+    return done({ status: 'error', messageId: '', error: `[${stage}] ${msg}` });
   }
 };
 

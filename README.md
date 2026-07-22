@@ -100,26 +100,36 @@ Store the token as the code-action secret named **`legacyApp`**.
    | `TRANSACTIONAL_EMAIL_OBJECT_TYPE` | *(optional)* defaults to `2-66209712` |
    | `SES_CONFIGURATION_SET` | *(optional)* open/click/bounce tracking |
 
-4. **Input fields:**
+4. **Baked-in config** — edit these constants at the top of the action:
+   - `RECORD_ID` — the Transactional Email record **this** workflow sends. It's
+     hardcoded, so each email template gets its own workflow with its own
+     `RECORD_ID`.
+   - `TOKEN_MAP` — optional `{{token}}` → input-field-name overrides (usually
+     empty; auto-normalized matching covers the common case).
+   - `DEBUG` — set `true` for verbose per-stage logging.
+
+5. **Input fields** (contact-triggered workflow):
 
    | Input | Map to | Required |
    |---|---|---|
-   | `transactional_email_id` | the Transactional Email record id | ✅ |
    | `email` | `contact.email` (the recipient) | ✅ |
-   | `firstname`, `company`, … | any contact property you want as a `{{token}}` | optional |
+   | `firstname`, `custom_variable`, … | each contact property referenced as a `{{token}}` | as needed |
 
-   Any input other than `transactional_email_id` / `email` / `hs_object_id`
-   becomes a merge token under its input name.
+   Any input other than `email` / `hs_object_id` becomes a merge token. A dotted
+   HTML token maps to the underscore input name (`{{custom.variable}}` →
+   `custom_variable`), case-insensitive; use `TOKEN_MAP` for anything that can't
+   auto-match.
 
-5. **Output fields** (optional, for branching/logging): `status`, `messageId`,
+6. **Output fields** (optional, for branching/logging): `status`, `messageId`,
    `error`.
 
-### Getting the template id into the action
+### Debugging
 
-`transactional_email_id` must reach the code step. Options:
-- store the id in a contact property mapped as the input, or
-- a "Set property value" step per workflow, or
-- an association + lookup (extend the action if you need this).
+The action logs each stage (`Reading …`, `HTML source: …`, `Tokens in
+template: …`, `Sending …`, `SES OK`). On failure it logs
+`FAILED at stage "<stage>" …` with the message and stack, and returns
+`error: "[<stage>] <message>"` so a workflow branch can see where it broke. Set
+`DEBUG = true` for extra detail (record props, payload size, input field names).
 
 ## Authoring the email HTML
 
