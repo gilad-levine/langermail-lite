@@ -21,6 +21,13 @@ Transactional Email object ──▶ Workflow ──▶ Custom Code Action ─�
                                                     → merge tags → send
 ```
 
+## 📖 Setting it up? Read the [User Guide](docs/USER_GUIDE.md)
+
+Step-by-step instructions for implementing this in a HubSpot instance — creating
+the workflow, adding secrets, and **adding inputs & mapping them to `{{tokens}}`**
+— live in **[`docs/USER_GUIDE.md`](docs/USER_GUIDE.md)**. The rest of this README
+is a technical overview.
+
 ## Status
 
 End-to-end send is **working and verified** from the HubSpot code step against

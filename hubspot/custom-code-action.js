@@ -4,52 +4,45 @@
  * LangerMail Lite — HubSpot Custom Code Action (Design A)
  * -------------------------------------------------------
  * Paste this whole file into an Operations Hub "Custom code" workflow action.
- * It reads a "Transactional Email" custom object, resolves its HTML (from the
- * attached file, falling back to the rich-text property), strips a
- * marker-delimited footer, substitutes {{merge_tags}} from the enrolled
- * contact, and sends via AWS SES — with zero external dependencies (Node
- * built-in `https` + `crypto`, so it runs on any HubSpot code-step runtime and
- * can't break on the package allowlist).
+ * It reads a "Transactional Email" custom object, resolves its HTML, strips the
+ * HubSpot footer, substitutes {{tokens}} from the enrolled contact, and sends
+ * via AWS SES. Zero external dependencies (Node built-in `https` + `crypto`).
  *
- * ── Secrets to configure on the code action ────────────────────────────────
- *   legacyApp                        HubSpot private-app access token (scopes below)
- *   AWS_ACCESS_KEY_ID                SES sender IAM key id
- *   AWS_SECRET_ACCESS_KEY            SES sender IAM secret
- *   AWS_REGION                       SES region, e.g. us-east-1  (must match
- *                                    where mail.langerlabs.com is verified)
- *   SES_CONFIGURATION_SET            (optional) for open/click/bounce tracking
+ * ► Step-by-step setup for a new HubSpot instance / new email: docs/USER_GUIDE.md
  *
- * Private-app scopes: crm.objects.custom.read, crm.objects.contacts.read, files
- *
- * ── Baked-in per-workflow config (edit RECORD_ID for each email) ────────────
- *   RECORD_ID   the Transactional Email record this workflow sends
- *   TOKEN_MAP   optional {{token}} → input-field-name overrides
- *
- * ── Input fields to map in the workflow (contact-triggered) ─────────────────
- *   email            → contact.email (required; the recipient)
- *   <body variables> → map each contact property you reference as {{token}}
- *
- * ── Output fields ──────────────────────────────────────────────────────────
- *   status      "sent" | "error"
- *   messageId   SES message id on success
- *   error       message on failure
+ * Only the CONFIGURE ME block below is edited per workflow. Everything under
+ * "end configuration" is the engine and rarely needs changes.
  */
 
 const https = require('https');
 const crypto = require('crypto');
 
-// ── Per-workflow config (baked in) ───────────────────────────────────────────
-const OBJECT_TYPE = process.env.TRANSACTIONAL_EMAIL_OBJECT_TYPE || '2-66209712';
-const RECORD_ID = '59082949729'; // ← the Transactional Email record for THIS workflow
-const DEBUG = false; // set true for verbose per-stage logging
+/* ══════════════════════════════════════════════════════════════════════════
+ *  CONFIGURE ME  ·  the only part you edit for each workflow/email
+ *  (full walkthrough in docs/USER_GUIDE.md)
+ * ══════════════════════════════════════════════════════════════════════════ */
 
-// Optional explicit map of HTML token name → workflow input-field name. Only
-// needed when a token can't be auto-matched (auto matching lowercases and turns
-// non-alphanumerics into "_", so {{custom.variable}} already finds input
-// `custom_variable`). Example: { 'custom.first': 'firstname' }.
+// 1) RECORD ID — the Transactional Email record THIS workflow sends.
+//    Open the record in HubSpot; the id is the number in the URL
+//    (…/objects/2-66209712/record/<RECORD_ID>). One workflow = one email.
+const RECORD_ID = '59082949729';
+
+// 2) TOKEN MAP — connect the {{tokens}} in your email HTML to the workflow
+//    input fields you create (see USER_GUIDE "Add inputs & map tokens").
+//      LEFT  = the token exactly as written in the email, e.g. 'custom.first'
+//      RIGHT = the input field name you added in the action, e.g. 'firstname'
+//    You usually leave this EMPTY: tokens auto-match by lowercasing and turning
+//    dots/spaces into "_", so {{custom.variable}} already finds an input named
+//    `custom_variable`. Add an entry only when a token can't auto-match.
+//    Example:  const TOKEN_MAP = { 'custom.first': 'firstname', 'order.id': 'order_id' };
 const TOKEN_MAP = {};
 
-// ── Property names on the Transactional Email object (override here if yours differ) ──
+// 3) DEBUG — verbose per-stage logging while you set things up. Flip to false
+//    once the workflow is sending correctly.
+const DEBUG = true;
+
+// 4) PROPERTY NAMES — only change these if your Transactional Email object uses
+//    different internal property names than the defaults below.
 const PROPS = {
   subject: 'subject_line',
   fromName: 'from_name',
@@ -58,6 +51,17 @@ const PROPS = {
   html: 'body_html_text', // rich-text property (fallback; escapes raw HTML source)
   htmlFile: 'body_html_file', // file-upload property (preferred; true raw HTML)
 };
+
+/* ── Advanced (rarely changed) ─────────────────────────────────────────────
+ * Object type + secrets. Secrets are set in the action's Secrets panel, NOT
+ * here: legacyApp (HubSpot token), AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
+ * AWS_REGION, and optional SES_CONFIGURATION_SET.
+ * Private-app scopes: crm.objects.custom.read, crm.objects.contacts.read, files
+ */
+const OBJECT_TYPE = process.env.TRANSACTIONAL_EMAIL_OBJECT_TYPE || '2-66209712';
+const HUBSPOT_TOKEN = process.env.legacyApp || process.env.HUBSPOT_TOKEN;
+
+/* ═══════════════════════════ end configuration ═══════════════════════════ */
 
 // Input fields that control the send rather than acting as merge tokens.
 const RESERVED_INPUTS = new Set(['transactional_email_id', 'email', 'hs_object_id']);
@@ -407,9 +411,8 @@ exports.main = async (event, callback) => {
 
     // Fail fast with a clear message for each missing prerequisite.
     stage = 'validate-config';
-    const token = env.legacyApp || env.HUBSPOT_TOKEN;
     const missing = [];
-    if (!token) missing.push('secret legacyApp');
+    if (!HUBSPOT_TOKEN) missing.push('secret legacyApp');
     if (!env.AWS_ACCESS_KEY_ID) missing.push('secret AWS_ACCESS_KEY_ID');
     if (!env.AWS_SECRET_ACCESS_KEY) missing.push('secret AWS_SECRET_ACCESS_KEY');
     if (!env.AWS_REGION) missing.push('secret AWS_REGION');
@@ -423,14 +426,14 @@ exports.main = async (event, callback) => {
 
     stage = 'read-record';
     console.log(`Reading ${OBJECT_TYPE}/${RECORD_ID} ...`);
-    const props = await fetchTransactionalEmail(OBJECT_TYPE, RECORD_ID, token);
+    const props = await fetchTransactionalEmail(OBJECT_TYPE, RECORD_ID, HUBSPOT_TOKEN);
     dbg('record props:', JSON.stringify({
       subject: props[PROPS.subject], from: props[PROPS.fromEmail],
       has_file: !!props[PROPS.htmlFile], has_text: !!props[PROPS.html],
     }));
 
     stage = 'resolve-html';
-    const html = await resolveHtml(props, token);
+    const html = await resolveHtml(props, HUBSPOT_TOKEN);
 
     // Surface which tokens the template uses and which have no matching input.
     stage = 'merge-tokens';
